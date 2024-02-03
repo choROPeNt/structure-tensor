@@ -12,6 +12,7 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+.venv_struct
 .Python
 build/
 develop-eggs/
