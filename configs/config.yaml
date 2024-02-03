@@ -1,0 +1,7 @@
+file_path: data/Biax_type285_img_0001-0915_raw.hdf5
+result_path: results/
+dtype: np.uint16
+fiber_diameter: 7 
+voxel_size: 2.308
+# path to the raw data within the H5
+raw_internal_path: /raw
