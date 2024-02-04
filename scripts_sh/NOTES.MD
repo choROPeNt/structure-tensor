@@ -25,8 +25,7 @@ python -m pip install cupy-cuda11x
 check installation
 
 ```bash
-python -c "import cupy as cp; x = cp.array([1, 2, 3]);print(x.device);print(cp.cuda.runtime.getDeviceCount());
-cp.cuda.Device(1).use()"
+python -c "import cupy as cp; x = cp.array([1, 2, 3]);print(x.device);print(cp.cuda.runtime.getDeviceCount());cp.cuda.Device(0).use()"
 ```
 
 - `PyTorch==2.1.2` mit `CUDA==11.8.0`
