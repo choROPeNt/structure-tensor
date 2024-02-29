@@ -116,7 +116,7 @@ def main():
     out['vec'] = vec
 
 
-    with h5.File(os.path.join(result_path,filename_without_extension + "results.h5"), 'w') as fout:
+    with h5.File(os.path.join(result_path,filename_without_extension + "_results.h5"), 'w') as fout:
         for key in out.keys():
             fout.create_dataset(key, data = out[key])
 
