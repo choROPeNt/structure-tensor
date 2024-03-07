@@ -13,7 +13,7 @@
 #SBATCH --mem=256G                             # memory per CPU core
 #SBATCH --gres=gpu:1                                    # number of gpus
 #SBATCH -J "structure-tensor"                           # job name
-#SBATCH --output=/lustre/ssd/ws/dchristi-3dseg/slurm_out/strucutre-tensor-%j.out
+#SBATCH --output=structure-tensor-%j.out
 #SBATCH --mail-user=christian.duereth@tu-dresden.de     # email address
 #SBATCH --mail-type=BEGIN,END,FAIL,REQUEUE,TIME_LIMIT,TIME_LIMIT_90
 #SBATCH -A p_autoshear

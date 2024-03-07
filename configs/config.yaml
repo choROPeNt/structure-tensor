@@ -1,4 +1,4 @@
-file_path: /lustre/ssd/ws/dchristi-3dseg/data/RAW-Volumen-Wohlfahrt/C3-H81_3cm-oben-raw_subvolume.h5
+file_path: /lustre/ssd/ws/dchristi-3dseg/data/RAW-Volumen-Wohlfahrt/C3-H81_3cm-oben-raw_subvolume2.h5
 result_path: /lustre/ssd/ws/dchristi-3dseg/str-tensor_results/
 dtype: np.uint16
 fiber_diameter: 7 
