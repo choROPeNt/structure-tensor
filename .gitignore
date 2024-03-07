@@ -3,6 +3,10 @@
 data/
 
 
+# user files
+.DS_Store
+*.out
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
