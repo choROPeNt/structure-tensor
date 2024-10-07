@@ -1,7 +1,7 @@
-file_path: /lustre/ssd/ws/dchristi-3dseg/data/RAW-Volumen-Wohlfahrt/C3-H81_3cm-oben-raw_subvolume2.h5
-result_path: /lustre/ssd/ws/dchristi-3dseg/str-tensor_results/
-dtype: np.uint16
+file_path: /data/horse/ws/dchristi-struct_tensor/data/Biax_type285_img_0916-1831.vol.h5
+result_path: /data/horse/ws/dchristi-struct_tensor/results/
+dtype: np.uint8
 fiber_diameter: 7 
-voxel_size: 7.5
+voxel_size: 2.1
 # path to the raw data within the H5
-raw_internal_path: /raw
+raw_internal_path: /volume

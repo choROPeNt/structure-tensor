@@ -112,13 +112,14 @@ def main():
 
     
     out = {}
-    out['raw'] = raw_data
-    out['vec'] = vec
+    out['raw'] = raw_data.astype(np.uint8)
+    out['vec'] = vec.astype(np.float16)
 
 
-    with h5.File(os.path.join(result_path,filename_without_extension + "_results.h5"), 'w') as fout:
+    with h5.File(os.path.join(result_path,filename_without_extension + ".vec.h5"), 'w') as fout:
         for key in out.keys():
-            fout.create_dataset(key, data = out[key])
+            fout.create_dataset(key, data = out[key],compression="gzip")
+
 
 if __name__ == '__main__':
 
