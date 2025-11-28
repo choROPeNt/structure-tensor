@@ -265,6 +265,6 @@ def eig_special_3d(
     if eigenvalue_order == "desc":
         val = lib.flip(val, axis=0)
         if full:
-            vec = lib.flip(vec, axis=1)
+            vec = lib.flip(vec, axis=0)
 
     return val, vec
