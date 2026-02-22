@@ -10,6 +10,7 @@ results
 # user files
 .DS_Store
 *.out
+.test_multiprocessing
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

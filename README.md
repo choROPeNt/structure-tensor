@@ -2,16 +2,16 @@
 Fast and simple to use 2D and 3D [structure tensor](https://en.wikipedia.org/wiki/Structure_tensor) implementation for Python.
 
 ## Installation
-Install package using ```pip install structure-tensor``` or clone the repository.
+Install package using `pip install structure-tensor` or clone the repository.
 
 ### CUDA Support
-For CUDA support install extra (optional) dependancy [CuPy](https://github.com/cupy/cupy). If CUDA is installed on your system, ```pip install cupy``` should be enough, but may be slow as CuPy will compile code during install. Alternatively use one of the [precompiled packages](https://github.com/cupy/cupy#installation).
+For CUDA support install extra (optional) dependancy [CuPy](https://github.com/cupy/cupy). If CUDA is installed on your system, `pip install cupy` should be enough, but may be slow as CuPy will compile code during install. Alternatively use one of the [precompiled packages](https://github.com/cupy/cupy#installation).
 
 ## Tiny Examples
-The parameters for the structure tensor calculations are $\rho$ (```rho```) and $\sigma$ (```sigma```), which are scalar values.
+The parameters for the structure tensor calculations are $\rho$ (`rho`) and $\sigma$ (`sigma`), which are scalar values.
 
 ### 2D and 3D using NumPy
-The ```structure_tensor``` package support doing either 2D or 3D structure tensor analysis. Eigenvalues (```val```) are sorted acending.
+The `structure_tensor` package support doing either 2D or 3D structure tensor analysis. Eigenvalues (`val`) are sorted acending.
 
 ``` python
 import numpy as np
@@ -27,7 +27,7 @@ S = structure_tensor_2d(image, sigma, rho)
 val, vec = eig_special_2d(S)
 ```
 
-For volume with shape ```(x, y, z)``` the eigenvectors (```vec```) are returned as ```zyx```.
+For volume with shape `(x, y, z)` the eigenvectors (`vec`) are returned as `zyx`.
 
 ``` python
 import numpy as np
@@ -44,7 +44,7 @@ val, vec = eig_special_3d(S)
 ```
 
 ### 3D using CuPy
-CuPy functions are available in the ```structure_tensor.cp``` module. They work similar to their NumPy counterparts, except that they return ```cupy.ndarray```s. The functions will automatically handle moving input data if necessary.
+CuPy functions are available in the `structure_tensor.cp` module. They work similar to their NumPy counterparts, except that they return `cupy.ndarray`s. The functions will automatically handle moving input data if necessary.
 
 ``` python
 import cupy as cp
@@ -66,30 +66,51 @@ vec = cp.asnumpy(vec)
 ```
 
 ## Advanced examples
-The `structure_tensor` module also contains functions for parallel "blocked" calculation of the structure tensor and eigendecomposition. The easiest approach is to use the built-in function `parallel_structure_tensor_analysis`. This allows the computations to be distributed across many CPUs and CUDA devices. This can speed up computations many times and has the added benefit of reducing memory usage during calculation.
+The `structure_tensor` module also contains functions for parallel "blocked" calculation of the structure tensor and eigendecomposition. The easiest approach is to use the built-in function `structure_tensor.multiprocessing.parallel_structure_tensor_analysis`. This allows the computations to be distributed across many CPUs and CUDA devices. This can speed up computations many times and has the added benefit of reducing memory usage during calculation.
 
-In the example below the volume `data` is split into blocks of size 200 cubed and the workload will be distributed across 16 CPUs. 
+In the example below the volume `data` is split into blocks of size 200 cubed and the workload will be distributed across 16 CPUs.
 ``` python
-vec, val = parallel_structure_tensor_analysis(data, sigma, rho, devices=16*['cpu'], block_size=200)
+S, val, vec = parallel_structure_tensor_analysis(data, sigma, rho, devices=16*['cpu'], block_size=200)
 ```
 Alternatively, if we have a CUDA enabled GPU available, we could use that instead.
 ``` python
-vec, val = parallel_structure_tensor_analysis(data, sigma, rho, devices=['cuda'], block_size=200)
+S, val, vec = parallel_structure_tensor_analysis(data, sigma, rho, devices=['cuda'], block_size=200)
 ```
 If the GPU has sufficient memory we could likely speed up the calculations by using several processes to feed the GPU.
 ``` python
-vec, val = parallel_structure_tensor_analysis(data, sigma, rho, devices=4*['cuda'], block_size=200)
+S, val, vec = parallel_structure_tensor_analysis(data, sigma, rho, devices=4*['cuda'], block_size=200)
 ```
 If we have four CUDA devices available, we could choose to use several specific devices, e.g., device 0 and 2.
 ``` python
-vec, val = parallel_structure_tensor_analysis(data, sigma, rho, devices=4*['cuda:0'] + 4*['cuda:2'], block_size=200)
+S, val, vec = parallel_structure_tensor_analysis(data, sigma, rho, devices=4*['cuda:0'] + 4*['cuda:2'], block_size=200)
 ```
 We could even choose to use a mix of CPU and GPU processes, e.g., four processes for GPU 0, two for GPU 2, and 8 processes runing the calculations on the CPU.
 ``` python
-vec, val = parallel_structure_tensor_analysis(data, sigma, rho, devices=4*['cuda:0'] + 2*['cuda:2'] + 8*['cpu'], block_size=200)
+S, val, vec = parallel_structure_tensor_analysis(data, sigma, rho, devices=4*['cuda:0'] + 2*['cuda:2'] + 8*['cpu'], block_size=200)
 ```
 
 The ideal block size depends on the `sigma` and `rho`, the devices, and the memory available for the devices. Usually values between 100 and 400 work well. **If you encounter out-of-memory errors, try reducing the block size and/or the number of processes.**
+
+You can use the following snipped to get a progress bar (with [tqdm](https://github.com/tqdm/tqdm#hooks-and-callbacks)).
+
+``` python
+class TqdmTotal(tqdm):
+    def update_with_total(self, n=1, total=None):
+        if total is not None:
+            self.total = total
+        return self.update(1)
+
+with TqdmTotal() as t:
+    S, val, vec = parallel_structure_tensor_analysis(
+        data,
+        sigma=0.1,
+        rho=0.2,
+        devices=7 * ["cpu"],
+        include_all_eigenvectors=True,
+        block_size=30,
+        progress_callback_fn=t.update_with_total,
+    )
+```
 
 ### Other advanced use
 The notebooks published in the [datasets](#data-and-notebooks) also contains examples. The `StructureTensorFiberAnalysisDemo` [ [notebook](https://zenodo.org/record/3877522/files/StructureTensorFiberAnalysisDemo.ipynb?download=1) | [HTML](https://zenodo.org/record/3877522/files/StructureTensorFiberAnalysisDemo.html?download=1) ] and `StructureTensorFiberAnalysisAdvancedDemo` [ [notebook](https://zenodo.org/record/3877522/files/StructureTensorFiberAnalysisAdvancedDemo.ipynb?download=1) | [HTML](https://zenodo.org/record/3877522/files/StructureTensorFiberAnalysisAdvancedDemo.html?download=1) ] notebooks are a good starting point. **However, these notebooks were made before the `parallel_structure_tensor_analysis` function was added and therefore use their own [code](https://zenodo.org/record/3877522/files/structure_tensor_workers.py?download=1) for parallel ST computation.**
