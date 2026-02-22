@@ -259,6 +259,7 @@ def eig_special_3d(S, full=False):
         l = np.einsum('ij,ij->j', vec, vec, out=vec_tmp)
 
     np.sqrt(l, out=l)
+    l = np.clip(l, 1e-12, None) # preventing zero division
     vec /= l
 
     return val.reshape(val.shape[:-1] + input_shape[1:]), vec.reshape(vec.shape[:-1] + input_shape[1:])

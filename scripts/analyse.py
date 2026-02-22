@@ -2,10 +2,13 @@
 import os
 import argparse
 import yaml
-
+from time import time
 ## calculation packages
 import numpy as np
-from structure_tensor import eig_special_3d, structure_tensor_3d
+import cupy as cp
+from structure_tensor import eig_special_3d, structure_tensor_3d, parallel_structure_tensor_analysis
+
+
 
 ## export packages
 import vtk as vtk; from vtk.util import numpy_support
@@ -54,12 +57,34 @@ def main():
     # Define the file path and data type
     file_path = config["file_path"]
     result_path = config["result_path"]
+
+
+    print("="*15)
+    # Check CuPy version
+    print("CuPy version:", cp.__version__)
+
+    # Check GPU availability
+    try:
+        cp.cuda.Device(0).compute_capability  # Try accessing GPU 0
+        print("GPU is available:", cp.cuda.runtime.getDeviceProperties(0)['name'])
+    except cp.cuda.runtime.CUDARuntimeError as e:
+        print("No GPU available or CuPy not correctly installed:", e)
+
+    n_devices = cp.cuda.runtime.getDeviceCount()
+    for i in range(n_devices):
+        props = cp.cuda.runtime.getDeviceProperties(i)
+        print(f"GPU {i}: {props['name']}")
+
+    if n_devices > 1:
+        import multiprocessing as mp
+        mp.set_start_method("spawn", force=True)
+
+    print("="*15)
+
     # Extract filename without the file extension
     filename_without_extension, _ = os.path.splitext(os.path.basename(file_path))
 
     print("Filename without extension:", filename_without_extension)
-
-
 
     ## Parameters for StuctureTensor analysis
     fiber_diameter = config["fiber_diameter"] # μm
@@ -74,13 +99,17 @@ def main():
     else:
         raise ValueError("Unsupported file format. Supported formats: .raw, .hdf5, .h5")
 
+    # raw_data = np.random.rand(1024, 1024, 1024).astype(np.float32)
+    
 
+    
     if raw_data is not None:
         # Now you have your data in a NumPy array (raw_data)
         print(raw_data.shape,raw_data.dtype,raw_data.nbytes/1024**2)
 
-    ## convert to float64  
-    raw_data = raw_data.astype(np.float64)
+    ## convert to float64
+    ## TODO check if single precision is enough and if data is to normalize
+    raw_data = raw_data.astype(np.float32)
 
     ## set parameters for Gaussian Kernel
     r = fiber_diameter / 2 / voxel_size
@@ -89,19 +118,36 @@ def main():
 
     print('sigma:', sigma)
     print('rho:', rho)
+    if n_devices > 1:
 
-    S = structure_tensor_3d(raw_data, sigma, rho)
-    print(f'Structure tensor information is carried in a {S.shape} array.')
-    val, vec = eig_special_3d(S, full=False)
-    print(f'Orientation information is carried in a {vec.shape} array.')
+        t0 = time()
+        workers_per_device = 6
+        devices = [f'cuda:{i}' for i in range(n_devices) for _ in range(workers_per_device)]
 
+        vec, _ = parallel_structure_tensor_analysis(
+            raw_data, 
+            sigma, 
+            rho, 
+            devices=devices, 
+            block_size=128
+        )
+        t1 = time()
+
+    else:
+
+        t0 = time()
+        S = structure_tensor_3d(raw_data, sigma, rho)
+        print(f'Structure tensor: {S.shape} array as type {S.dtype}.')
+        _, vec = eig_special_3d(S, full=False)
+        print(f'Orientation: {vec.shape} array as type {vec.shape}')
+        t1 = time()
+
+    print(f"calulation was done on {n_devices} GPU(s) in {(t1-t0):.3f} seconds")
+    
+    
+    
     ##TODO write export for big data
 
-    # print(vec.nbytes/1024**2)
-    # vec = (vec - vec.min()) / (vec.max() - vec.min())
-    # vec = (vec*255).astype(np.uint8)
-    # print(vec.nbytes/1024**2)
-    # convert the data form uint16 to float 32
     
     # print(raw_data.nbytes/1024**2)
     # #normalize the data range 0-1
@@ -112,8 +158,8 @@ def main():
 
     
     out = {}
-    out['raw'] = raw_data.astype(np.uint8)
-    out['vec'] = vec.astype(np.float16)
+    # out['raw'] = raw_data.astype(np.uint8) # return tensor in uint8 TODO retrun in 
+    out['vec'] = vec.astype(np.float32) # return tensor in single precision
 
 
     with h5.File(os.path.join(result_path,filename_without_extension + ".vec.h5"), 'w') as fout:
