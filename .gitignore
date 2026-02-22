@@ -3,6 +3,10 @@
 data/
 
 
+data
+results
+.venv
+
 # user files
 .DS_Store
 *.out
