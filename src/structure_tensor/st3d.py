@@ -8,12 +8,10 @@ try:
     import cupy as lib  # pyright: ignore[reportMissingImports]
     from cupyx.scipy import ndimage # pyright: ignore[reportMissingImports]
     xp = "cupy"
-    print("Using CuPy backend (GPU)")
 except ImportError:
     import numpy as lib
     from scipy import ndimage
     xp = "numpy"
-    print("Using NumPy backend (CPU)")
 
 Array = Any
 
