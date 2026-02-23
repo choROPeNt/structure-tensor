@@ -1,20 +1,30 @@
 """3D structure tensor module."""
+from __future__ import annotations
 
 import logging
-from typing import Literal
+from typing import Any, Literal
 
-import numpy as lib
-import numpy.typing as libt
-from scipy import ndimage
+try:
+    import cupy as lib  # pyright: ignore[reportMissingImports]
+    from cupyx.scipy import ndimage # pyright: ignore[reportMissingImports]
+    xp = "cupy"
+    print("Using CuPy backend (GPU)")
+except ImportError:
+    import numpy as lib
+    from scipy import ndimage
+    xp = "numpy"
+    print("Using NumPy backend (CPU)")
+
+Array = Any
 
 
 def structure_tensor_3d(
-    volume: libt.ArrayLike,
+    volume: Array,
     sigma: float,
     rho: float,
-    out: libt.NDArray | None = None,
+    out: Array | None = None,
     truncate: float = 4.0,
-) -> libt.NDArray:
+) -> Array:
     """Calculate the structure tensor for 3D image data.
 
     Args:
@@ -68,10 +78,10 @@ def structure_tensor_3d(
 
 
 def eig_special_3d(
-    S: libt.ArrayLike,
+    S: Array,
     full: bool = False,
     eigenvalue_order: Literal["desc", "asc"] = "desc",
-) -> tuple[libt.NDArray, libt.NDArray]:
+) -> tuple[Array, Array]:
     """Eigensolution for symmetric real 3-by-3 matrices.
 
     Args:
@@ -257,7 +267,7 @@ def eig_special_3d(
         l = lib.einsum("ij,ij->j", vec, vec, out=vec_tmp)
 
     lib.sqrt(l, out=l)
-    l = lib.clip(l, 1e-12, None, out= l) # preventing zero division / stay in place
+    lib.maximum(l, 1e-12, out=l)
     vec /= l
 
     val = val.reshape(val.shape[:-1] + input_shape[1:])
