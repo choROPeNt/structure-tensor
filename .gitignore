@@ -1,9 +1,9 @@
 # User Folders
 
 data/
+notebooks/archiv/
 
-
-data
+data*
 results
 .venv
 
