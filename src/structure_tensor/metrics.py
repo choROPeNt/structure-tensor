@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Any, Literal, Tuple
 
 # ----------------------------
 # Backend selection
@@ -9,11 +9,10 @@ from typing import Any, Literal
 try:
     import cupy as lib  # pyright: ignore[reportMissingImports]
     xp: Literal["cupy", "numpy"] = "cupy"
-    print("Using CuPy backend (GPU)")
 except ImportError:
     import numpy as lib  # type: ignore
     xp = "numpy"
-    print("Using NumPy backend (CPU)")
+
 
 Array = Any
 
@@ -51,7 +50,7 @@ def cosine_similarity(
     eps: float = 1e-12,
     return_map: bool = False,
     mask: Array | None = None,
-):
+) -> Tuple[float,...]:
     """
     Cosine similarity between two vector fields.
 
