@@ -38,7 +38,7 @@ def structure_tensor_3d(
     """
 
     # Make sure it's an array.
-    volume = lib.asarray(volume)
+    volume = lib.asarray(volume).astype(lib.float32, copy=False)
 
     # Check data type. Must be floating point.
     if not lib.issubdtype(volume.dtype, lib.floating):
@@ -75,6 +75,108 @@ def structure_tensor_3d(
     return S
 
 
+
+def S6_to_mat33(S, dtype=None):
+    """
+    Convert structure tensor from 6 components to full 3x3 symmetric matrix.
+
+    Input
+    -----
+    S : array (6, ...)
+        Order: [xx, yy, zz, xy, xz, yz]
+
+    Returns
+    -------
+    A : array (..., 3, 3)
+    """
+
+    S = lib.asarray(S)
+    if dtype is not None:
+        S = S.astype(dtype, copy=False)
+
+    if S.shape[0] != 6:
+        raise ValueError(f"S must have shape (6, ...). Got {S.shape}.")
+
+    Sxx, Syy, Szz, Sxy, Sxz, Syz = S
+    shp = S.shape[1:]
+
+    A = lib.empty(shp + (3, 3), dtype=S.dtype)
+    A[..., 0, 0] = Sxx
+    A[..., 1, 1] = Syy
+    A[..., 2, 2] = Szz
+    A[..., 0, 1] = Sxy; A[..., 1, 0] = Sxy
+    A[..., 0, 2] = Sxz; A[..., 2, 0] = Sxz
+    A[..., 1, 2] = Syz; A[..., 2, 1] = Syz
+    return A
+
+
+def eigh_baseline_3d(
+    A: Array,
+    full: bool = False,
+    eigenvalue_order: str = "desc",
+    which_vec: str = "min",  # "min" smallest eigenvalue eigenvector, "max" largest
+    dtype=None,              # e.g. lib.float32
+) -> tuple[Array, Array]:
+    """
+    Batched symmetric eigensolve for matrix field A with shape (..., 3, 3).
+
+    Returns
+    -------
+    val : (3, ...)
+        Eigenvalues.
+    vec :
+        - (3, ...) if full=False (one eigenvector)
+        - (3, 3, ...) if full=True (all eigenvectors, ordered with eigenvalues)
+
+    Notes
+    -----
+    - lib.linalg.eigh returns eigenvalues ascending and eigenvectors as columns.
+    - If eigenvalue_order="desc", eigenvalues are flipped to descending.
+      For full=True, eigenvectors are flipped to match.
+    - For full=False, which_vec selects min/max eigenvector *independently* of eigenvalue_order.
+      (This matches the typical "pick smallest or largest eigenpair" behavior.)
+    """
+    A = lib.asarray(A)
+    if dtype is not None:
+        A = A.astype(dtype, copy=False)
+
+    if A.shape[-2:] != (3, 3):
+        raise ValueError(f"A must have shape (..., 3, 3). Got {A.shape}.")
+
+    w, V = lib.linalg.eigh(A)   # w (...,3) ascending, V (...,3,3) columns
+
+    # eigenvalues to (3, ...)
+    val = lib.moveaxis(w, -1, 0)
+
+    if full:
+        # order eigenpairs if requested
+        if eigenvalue_order == "desc":
+            w = lib.flip(w, axis=-1)
+            V = lib.flip(V, axis=-1)
+            val = lib.moveaxis(w, -1, 0)
+
+        vec = lib.moveaxis(V, (-2, -1), (0, 1))  # (3,3,...)
+        return val, vec
+
+    which_vec = which_vec.lower()
+    if which_vec not in ("min", "max"):
+        raise ValueError('which_vec must be "min" or "max".')
+
+    # pick eigenvector column (ascending order)
+    v = V[..., :, 0] if which_vec == "min" else V[..., :, -1]  # (...,3)
+    vec = lib.moveaxis(v, -1, 0)                                # (3,...)
+
+    # optionally flip eigenvalues only
+    if eigenvalue_order == "desc":
+        val = lib.flip(val, axis=0)
+
+    return val, vec
+
+
+
+
+
+
 def eig_special_3d(
     S: Array,
     full: bool = False,
@@ -99,7 +201,7 @@ def eig_special_3d(
 
     Authors: vand@dtu.dk, 2019; niejep@dtu.dk, 2019-2024
     """
-    S = lib.asarray(S)
+    S = lib.asarray(S).astype(lib.float32, copy=False)
 
     # Check data type. Must be floating point.
     if not lib.issubdtype(S.dtype, lib.floating):
@@ -264,9 +366,12 @@ def eig_special_3d(
         # vec is [x1 y1 z1] = v1
         l = lib.einsum("ij,ij->j", vec, vec, out=vec_tmp)
 
-    lib.sqrt(l, out=l)
-    lib.maximum(l, 1e-12, out=l)
+    lib.sqrt(l, out = l)
+    lib.maximum(l, 1e-24, out = l)
     vec /= l
+
+
+
 
     val = val.reshape(val.shape[:-1] + input_shape[1:])
     vec = vec.reshape(vec.shape[:-1] + input_shape[1:])
