@@ -6,7 +6,7 @@ import numpy as np
 import numpy.typing as npt
 
 try:
-    import cupy as cp
+    import cupy as cp # pyright: ignore[reportMissingImports]
 except Exception as ex:
     cp = None
 
