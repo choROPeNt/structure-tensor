@@ -1,8 +1,7 @@
 
 from __future__ import annotations
 
-import logging
-from typing import Any, Literal, Tuple
+from typing import Any, Literal, Tuple, Optional
 
 # ----------------------------
 # Backend selection
@@ -17,50 +16,59 @@ except ImportError:
 Array = Any
 
 
-def _as_float(x: Array, dtype=None) -> Array:
-    """Ensure floating dtype for stable metrics."""
-    if dtype is None:
-        # sensible defaults: float32 on GPU, float64 on CPU
-        dtype = lib.float32 if xp == "cupy" else lib.float64
-    x = lib.asarray(x)
-    if not lib.issubdtype(x.dtype, lib.floating):
-        x = x.astype(dtype, copy=False)
-    return x
-
 
 def align_direction(
     v: Array,
-    axes: Tuple[str, ...] = ("x", "y"),
+    axes: Optional[Tuple[str, ...]] = ("x", "y"),
     inplace: bool = False,
+    dtype: lib.dtype | type = None,
 ) -> Array:
     """
     Flip vectors so their projection onto the given axes is positive.
 
     Expected layout:
       - (3, X, Y, Z) components first
+
+    If axes is None or empty, returns v unchanged (or a copy if inplace=False).
     """
-    v = _as_float(v)
+    v = lib.asarray(v)
+    if dtype is not None:
+        v = v.astype(dtype, copy=False)
+    
+
+    # no alignment requested
+    if axes is None or len(axes) == 0:
+        return v if inplace else v.copy()
 
     if not inplace:
         v = v.copy()
 
+
     if not (v.ndim >= 2 and v.shape[0] == 3):
-        raise ValueError(
-            f"Expected v with shape (3, ...). Got {getattr(v, 'shape', None)}."
-        )
+        raise ValueError(f"Expected v with shape (3, ...). Got {getattr(v, 'shape', None)}.")
 
     axis_map = {"x": 0, "y": 1, "z": 2}
     if not all(a in axis_map for a in axes):
         raise ValueError("axes must be any of 'x', 'y', 'z'")
 
-    # reference direction in the selected subspace
-    ref = lib.zeros((3, 1, 1, 1), dtype=v.dtype)  # broadcast over X,Y,Z
+    # ref shape: (3, 1, 1, ..., 1) matching v.ndim
+    ref_shape = (3,) + (1,) * (v.ndim - 1)
+    ref = lib.zeros(ref_shape, dtype=v.dtype)
     for a in axes:
-        ref[axis_map[a], 0, 0, 0] = 1.0
-    ref /= lib.linalg.norm(ref)
+        ref[axis_map[a]] = 1.0
 
-    dot = lib.sum(v * ref, axis=0)          # (X,Y,Z)
-    sign = lib.where(dot < 0, -1.0, 1.0)    # (X,Y,Z)
-    v *= sign[None, ...]                    # broadcast to (3,X,Y,Z)
+    # normalize ref safely (axes non-empty => norm > 0)
+    # avoid float() to not sync on GPU
+    n = lib.sqrt(lib.sum(ref * ref))
+    ref = ref / n
 
-    return v
+    dot = lib.sum(v * ref, axis=0)
+    sign = lib.where(dot < 0, -1.0, 1.0).astype(v.dtype, copy=False)
+
+    # v *= sign[None, ...]
+    lib.multiply(v, sign[None, ...], out=v)
+
+    return  v 
+
+
+
