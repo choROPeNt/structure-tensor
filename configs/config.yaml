@@ -1,8 +1,7 @@
-file_path: data/285_01_HR_.sub.vol.h5
+file_path: data/285_01_HR_.sub-000.vol.h5
 raw_internal_path: /volume
-block_size: [512,512,512]
-out_path: results/285_01_HR_.sub.vol.vec.eig.h5
+block_size: [1024,1024,1024]
+out_path: results/285_01_HR_.sub-000.vec.h5
 fiber_diameter: 7.e-3 
 voxel_size: 0.00230760
 
-# path to the raw data within the H5
