@@ -8,8 +8,6 @@ import yaml
 import h5py as h5
 from structure_tensor.h5_io import H5BlockReader, H5BlockWriter
 
-from structure_tensor.st3d import eigh_baseline_3d, S6_to_mat33
-
 from structure_tensor.pre_processing import normalize
 ## need something with padding
 from structure_tensor.post_processing import align_direction
@@ -72,56 +70,38 @@ def build_output_specs(
     in_path: Path,
     keys_in: tuple[str, ...] = ("volume",),
     block_size: tuple[int, int, int] = (128, 128, 128),
+    chunk_size: tuple[int, int, int] = (128, 128, 128),  # storage chunks
 ) -> dict:
-    """
-    Inspect the input HDF5 once and build dataset specs for outputs.
+    if len(block_size) != 3 or len(chunk_size) != 3:
+        raise ValueError("block_size and chunk_size must be (Z,Y,X)")
 
-    Returns:
-        specs: dict describing output datasets, e.g. specs["vec"], specs["vol"]
-    """
-    if len(block_size) != 3:
-        raise ValueError("block_size must be length 3 (Z,Y,X)")
-    bz, by, bx = (int(block_size[0]), int(block_size[1]), int(block_size[2]))
+    bz, by, bx = map(int, block_size)
+    cz, cy, cx = map(int, chunk_size)
 
-    # Use the first key as the primary input dataset
-    in_key = keys_in[0] if len(keys_in) > 0 else "volume"
+    in_key = keys_in[0] if keys_in else "volume"
 
     with h5.File(in_path, "r") as F:
-        if in_key not in F:
-            raise KeyError(f"Missing dataset '{in_key}' in: {in_path}")
-
         obj = F[in_key]
-        if not isinstance(obj, h5.Dataset):
-            raise TypeError(f"'{in_key}' is not an HDF5 dataset in: {in_path}")
+        vol_shape = obj.shape
+        vol_dtype = obj.dtype
 
-        vol_shape = obj.shape  # (Z, Y, X)
-        if len(vol_shape) != 3:
-            raise ValueError(f"Expected '{in_key}' shape (Z,Y,X). Got: {vol_shape}")
-
-        out_vec_shape = (3,) + vol_shape  # (3, Z, Y, X)
+    out_vec_shape = (3,) + vol_shape
 
     specs = {
         "vec": dict(
             shape=out_vec_shape,
-            dtype=lib.float32,           # works for numpy/cupy
-            chunks=(3, bz, by, bx),      # (C, Z, Y, X)
+            dtype=lib.float32,                
+            chunks=(3, cz, cy, cx),
             compression="gzip",
             compression_opts=4,
         ),
-        "vol": dict(
-            shape=vol_shape,
-            dtype=lib.uint16,            # works for numpy/cupy
-            chunks=(bz, by, bx),         # (Z, Y, X)
-            compression="gzip",
-            compression_opts=4,
-        ),
-        "val": dict(
-            shape=out_vec_shape,
-            dtype=lib.float32,            # works for numpy/cupy
-            chunks=(3, bz, by, bx),         # (Z, Y, X)
-            compression="gzip",
-            compression_opts=4,
-        ),
+        # "vol": dict(
+        #     shape=vol_shape,
+        #     dtype=vol_dtype,                  # keep input dtype
+        #     chunks=(cz, cy, cx),
+        #     compression="gzip",
+        #     compression_opts=4,
+        # ),
     }
     return specs
 
@@ -200,9 +180,9 @@ def main(config_path: Path) -> None:
     specs = build_output_specs(in_path=in_path, keys_in=keys_in, block_size=block_size)
 
     logger.info("Block size (Z,Y,X): %s", block_size)
-    logger.info("Detected volume shape (Z,Y,X): %s", specs["vol"]["shape"])
+    # logger.info("Detected volume shape (Z,Y,X): %s", specs["vol"]["shape"])
     logger.info("Planned vec output shape (3,Z,Y,X): %s", specs["vec"]["shape"])
-    logger.info("Planned chunks vec: %s | vol: %s", specs["vec"]["chunks"], specs["vol"]["chunks"])
+    # logger.info("Planned chunks vec: %s | vol: %s", specs["vec"]["chunks"], specs["vol"]["chunks"])
 
     # --- Parameters from YAML -------------------------------------------------
     voxel_size = float(require(cfg, "voxel_size"))         # µm/px
@@ -251,7 +231,10 @@ def main(config_path: Path) -> None:
             maxabs_pre = float(lib.max(lib.abs(vec)))
             finite_ok = bool(lib.isfinite(vec).all())
             if (not finite_ok) or (maxabs_pre > 1.5):
-                print(f"[WARN] pre-align: z={zsl}, y={ysl}, x={xsl} finite={finite_ok} maxabs={maxabs_pre}")
+                logger.warning(
+                                "pre-align: z=%s, y=%s, x=%s finite=%s maxabs=%g",
+                                zsl, ysl, xsl, finite_ok, maxabs_pre
+                            )
 
             vec = align_direction(vec, axes=axes)
 
@@ -264,12 +247,12 @@ def main(config_path: Path) -> None:
             if maxabs_post > 1.01:
                 print(f"[WARN] post-norm: z={zsl}, y={ysl}, x={xsl} maxabs={maxabs_post}")
 
-            vec = edge_aware_smooth_vec(vec, iters=100, sigma_theta_deg=24)
+            # vec = edge_aware_smooth_vec(vec, iters=100, sigma_theta_deg=24)
 
 
             writer.write_block("vec", zsl,ysl,xsl, vec.astype(lib.float32, copy=False))
-            writer.write_block("vol", zsl,ysl,xsl, vol.astype(lib.uint16, copy=False))
-            writer.write_block("val", zsl,ysl,xsl, val.astype(lib.float32, copy=False))
+            # writer.write_block("vol", zsl,ysl,xsl, vol.astype(lib.uint16, copy=False))
+            # writer.write_block("eig", zsl,ysl,xsl, val.astype(lib.float32, copy=False))
 
     logger.info("Finished")
 

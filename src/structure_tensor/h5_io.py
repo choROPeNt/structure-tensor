@@ -5,21 +5,16 @@ from pathlib import Path
 
 import h5py as h5
 
-try:
-    import cupy as lib  # pyright: ignore[reportMissingImports]
-    xp = "cupy"
-except ImportError:
-    import numpy as lib
-    xp = "numpy"
+import numpy as np
 
 
 def load_h5_datasets(
     file_path: Path | str,
     keys: Tuple[str, ...],
     slices: Optional[Dict[str, tuple]] = None,
-    dtype: lib.dtype | type = lib.float32,
+    dtype: np.dtype | type = np.float32,
     strict: bool = True,
-) -> Dict[str, lib.ndarray]:
+    ) -> Dict[str, np.ndarray]:
     """
     Load multiple datasets from HDF5 into a dictionary.
 
@@ -103,7 +98,7 @@ class H5BlockReader(Iterable):
         file_path: Path | str,
         keys: Tuple[str, ...],
         block_size: Tuple[int, int, int] = (64, 128, 128),
-        dtype=lib.float32,
+        dtype=np.float32,
         strict: bool = True,
     ):
         self.file_path = str(file_path)
@@ -154,7 +149,7 @@ class H5BlockReader(Iterable):
             raise ValueError(f"Unsupported dataset ndim={d0.ndim}")
         return int(Z), int(Y), int(X)
 
-    def __iter__(self) -> Iterable[Tuple[Tuple[slice, slice, slice], Dict[str, "lib.ndarray"]]]:
+    def __iter__(self) -> Iterable[Tuple[Tuple[slice, slice, slice], Dict[str, "np.ndarray"]]]:
         Z, Y, X = self._zyx_shape()
         bz, by, bx = self.block_size
 
@@ -170,7 +165,7 @@ class H5BlockReader(Iterable):
                     x1 = min(x0 + bx, X)
                     xsl = slice(x0, x1)
 
-                    batch: Dict[str, "lib.ndarray"] = {}
+                    batch: Dict[str, "np.ndarray"] = {}
                     for k, dset in self.ds.items():
                         if dset.ndim == 3:
                             arr = dset[zsl, ysl, xsl]              # (bz,by,bx)
@@ -180,7 +175,7 @@ class H5BlockReader(Iterable):
                             raise ValueError(f"Unsupported ndim={dset.ndim} for key='{k}'")
 
                         # important: keep backend consistent (numpy vs cupy)
-                        batch[k] = lib.asarray(arr, dtype=self.dtype)
+                        batch[k] = np.asarray(arr, dtype=self.dtype)
 
                     yield (zsl, ysl, xsl), batch
 
@@ -197,7 +192,7 @@ class H5BlockWriter:
       writer.write_block("vol", zsl, ysl, xsl, vol_block)
       writer.write_block("vec", zsl, ysl, xsl, vec_block)
     """
-
+    MAX_CHUNK_BYTES = 4 * 1024**3 - 1  # HDF5 limit (stay below)
     def __init__(
         self,
         out_path: Path | str,
@@ -210,10 +205,54 @@ class H5BlockWriter:
         self.F: Optional[h5.File] = None
         self.ds: Dict[str, h5.Dataset] = {}
 
+    @staticmethod
+    def _chunk_bytes(chunks, dtype) -> int:
+        return int(np.prod(chunks)) * np.dtype(dtype).itemsize
+
+    @classmethod
+    def _shrink_chunks_to_limit(cls, chunks, dtype):
+        """
+        Reduce chunk dims until chunk_bytes < 4 GiB.
+        Simple strategy: repeatedly halve the largest spatial dim.
+        """
+        chunks = list(map(int, chunks))
+        itemsize = np.dtype(dtype).itemsize
+
+        def bytes_now():
+            return int(np.prod(chunks)) * itemsize
+
+        if bytes_now() < cls.MAX_CHUNK_BYTES:
+            return tuple(chunks)
+
+        # Keep channel dim as-is if present (e.g. 3), shrink the biggest other dim(s)
+        while bytes_now() >= cls.MAX_CHUNK_BYTES:
+            # find largest dimension to shrink (prefer non-channel dims)
+            idxs = list(range(len(chunks)))
+            # prefer shrinking dims except dim 0 if it looks like channels (<=8 typically)
+            candidates = idxs[1:] if (len(chunks) == 4 and chunks[0] <= 8) else idxs
+            i = max(candidates, key=lambda j: chunks[j])
+
+            if chunks[i] <= 1:
+                break
+            chunks[i] = max(1, chunks[i] // 2)
+
+        if bytes_now() >= cls.MAX_CHUNK_BYTES:
+            raise ValueError(f"Could not shrink chunks below 4GiB. chunks={chunks}, dtype={dtype}")
+
+        return tuple(chunks)
+
     def __enter__(self):
         self.F = h5.File(self.out_path, self.mode)
+
         for k, sp in self.specs.items():
+            sp = dict(sp)  # copy
+
+            if "chunks" in sp and sp["chunks"] is not None:
+                safe = self._shrink_chunks_to_limit(sp["chunks"], sp["dtype"])
+                sp["chunks"] = safe
+
             self.ds[k] = self.F.create_dataset(k, **sp)
+
         return self
 
     def __exit__(self, exc_type, exc, tb):
