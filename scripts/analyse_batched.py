@@ -126,6 +126,51 @@ def build_output_specs(
     return specs
 
 
+def edge_aware_smooth_vec(v, iters=2, sigma_theta_deg=24.0, eps=1e-12):
+    """
+    Edge-aware smoothing for a line field (v ≡ -v). Preserves 90° jumps.
+    v: (3,X,Y,Z)
+    """
+    v = v.copy()
+    sigma_theta = lib.deg2rad(sigma_theta_deg)
+
+    def normed(x):
+        n = lib.linalg.norm(x, axis=0, keepdims=True)
+        return x / (lib.maximum(n, eps))
+
+    v = normed(v)
+
+    # 6-neighborhood shifts
+    shifts = [(+1,0,0),(-1,0,0),(0,+1,0),(0,-1,0),(0,0,+1),(0,0,-1)]
+
+    for _ in range(iters):
+        acc = lib.zeros_like(v)
+        wsum = lib.zeros(v.shape[1:], dtype=v.dtype)
+
+        for dx,dy,dz in shifts:
+            vn = lib.roll(v, shift=(dx,dy,dz), axis=(1,2,3))
+
+            # sign-invariant angle via abs(dot)
+            c = lib.abs(lib.sum(v * vn, axis=0))
+            c = lib.clip(c, 0.0, 1.0)
+            theta = lib.arccos(c)
+
+            w = lib.exp(-(theta*theta) / (2*sigma_theta*sigma_theta)).astype(v.dtype)
+
+            acc += vn * w[None, ...]
+            wsum += w
+
+        # include self weight
+        acc += v
+        wsum += 1.0
+
+        v = acc / wsum[None, ...]
+        v = normed(v)
+
+    return v
+
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -202,9 +247,6 @@ def main(config_path: Path) -> None:
             # print(S.shape,S.dtype)
             val, vec = eig_special_3d(S, full=False)  # expect vec: (3, bz, by, bx)
 
-            print(val.shape)
-            print(val[:3,0,0,0])
-            print(val[:3,64,64,64])
             # Debug only if suspicious
             maxabs_pre = float(lib.max(lib.abs(vec)))
             finite_ok = bool(lib.isfinite(vec).all())
@@ -222,7 +264,7 @@ def main(config_path: Path) -> None:
             if maxabs_post > 1.01:
                 print(f"[WARN] post-norm: z={zsl}, y={ysl}, x={xsl} maxabs={maxabs_post}")
 
-            # vec = edge_aware_smooth_vec(vec, iters=100, sigma_theta_deg=24)
+            vec = edge_aware_smooth_vec(vec, iters=100, sigma_theta_deg=24)
 
 
             writer.write_block("vec", zsl,ysl,xsl, vec.astype(lib.float32, copy=False))
