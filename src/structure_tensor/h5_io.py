@@ -1,19 +1,25 @@
 from __future__ import annotations
 
-from typing import Dict, Iterable, Tuple, Optional
+from typing import Dict, Iterable, Tuple, Optional, cast
 from pathlib import Path
 
 import h5py as h5
-import numpy as np
+
+try:
+    import cupy as lib  # pyright: ignore[reportMissingImports]
+    xp = "cupy"
+except ImportError:
+    import numpy as lib
+    xp = "numpy"
 
 
 def load_h5_datasets(
     file_path: Path | str,
     keys: Tuple[str, ...],
     slices: Optional[Dict[str, tuple]] = None,
-    dtype: np.dtype | type = np.float32,
+    dtype: lib.dtype | type = lib.float32,
     strict: bool = True,
-) -> Dict[str, np.ndarray]:
+) -> Dict[str, lib.ndarray]:
     """
     Load multiple datasets from HDF5 into a dictionary.
 
@@ -76,46 +82,57 @@ def load_h5_datasets(
 
 
 
-class H5BlockReader:
+class H5BlockReader(Iterable):
     """
-    Stream blocks from HDF5 datasets (typically chunk along Z).
+    Stream 3D blocks from HDF5 datasets.
 
-    Example shapes:
-      volume: (Z, Y, X)
-      vec:    (3, Z, Y, X)
+    Supports:
+      - (Z, Y, X) volumes
+      - (C, Z, Y, X) fields (components-first)
+
+    Iteration yields:
+      (zsl, ysl, xsl), batch_dict
+
+    batch[key] shapes:
+      - for (Z,Y,X):     (bz, by, bx)
+      - for (C,Z,Y,X):   (C, bz, by, bx)
     """
 
     def __init__(
         self,
         file_path: Path | str,
         keys: Tuple[str, ...],
-        z_block: int = 64,
-        dtype: np.dtype | type =np.float32,
+        block_size: Tuple[int, int, int] = (64, 128, 128),
+        dtype=lib.float32,
         strict: bool = True,
     ):
         self.file_path = str(file_path)
         self.keys = keys
-        self.z_block = int(z_block)
+        self.block_size = (int(block_size[0]), int(block_size[1]), int(block_size[2]))
         self.dtype = dtype
         self.strict = strict
 
-        self.F = None
-        self.ds = {}
+        self.F: Optional[h5.File] = None
+        self.ds: Dict[str, h5.Dataset] = {}
 
     def __enter__(self):
         self.F = h5.File(self.file_path, "r")
+
         for k in self.keys:
             if k not in self.F:
                 if self.strict:
                     raise KeyError(f"Key '{k}' not found in {self.file_path}")
-                else:
-                    continue
-            if not isinstance(self.F[k], h5.Dataset):
+                continue
+
+            obj = self.F[k]  # obj: Group | Dataset | Datatype (per stubs)
+
+            if not isinstance(obj, h5.Dataset):
                 if self.strict:
-                    raise TypeError(f"Key '{k}' is not a Dataset (got {type(self.F[k])})")
-                else:
-                    continue
-            self.ds[k] = self.F[k]
+                    raise TypeError(f"Key '{k}' is not a Dataset (got {type(obj)})")
+                continue
+
+            self.ds[k] = cast(h5.Dataset, obj)  # ✅ tells Pylance it's a Dataset
+
         if not self.ds:
             raise RuntimeError("No datasets opened. Check keys/strict.")
         return self
@@ -126,44 +143,72 @@ class H5BlockReader:
         self.F = None
         self.ds = {}
 
-    def _z_size(self) -> int:
-        # determine Z from first dataset (supports (Z,Y,X) or (C,Z,Y,X))
+    def _zyx_shape(self) -> Tuple[int, int, int]:
+        """Infer (Z,Y,X) from the first dataset."""
         d0 = next(iter(self.ds.values()))
-        return d0.shape[0] if d0.ndim == 3 else d0.shape[1]
+        if d0.ndim == 3:
+            Z, Y, X = d0.shape
+        elif d0.ndim == 4:
+            _, Z, Y, X = d0.shape
+        else:
+            raise ValueError(f"Unsupported dataset ndim={d0.ndim}")
+        return int(Z), int(Y), int(X)
 
-    def __iter__(self) -> Iterable[Tuple[slice, Dict[str, np.ndarray]]]:
-        Z = self._z_size()
-        for z0 in range(0, Z, self.z_block):
-            z1 = min(z0 + self.z_block, Z)
+    def __iter__(self) -> Iterable[Tuple[Tuple[slice, slice, slice], Dict[str, "lib.ndarray"]]]:
+        Z, Y, X = self._zyx_shape()
+        bz, by, bx = self.block_size
+
+        for z0 in range(0, Z, bz):
+            z1 = min(z0 + bz, Z)
             zsl = slice(z0, z1)
 
-            batch = {}
-            for k, dset in self.ds.items():
-                if dset.ndim == 3:
-                    arr = dset[zsl, :, :]
-                elif dset.ndim == 4:
-                    arr = dset[:, zsl, :, :]
-                else:
-                    raise ValueError(f"Unsupported ndim={dset.ndim} for key='{k}'")
-                batch[k] = np.asarray(arr, dtype=self.dtype)
-            yield zsl, batch
+            for y0 in range(0, Y, by):
+                y1 = min(y0 + by, Y)
+                ysl = slice(y0, y1)
+
+                for x0 in range(0, X, bx):
+                    x1 = min(x0 + bx, X)
+                    xsl = slice(x0, x1)
+
+                    batch: Dict[str, "lib.ndarray"] = {}
+                    for k, dset in self.ds.items():
+                        if dset.ndim == 3:
+                            arr = dset[zsl, ysl, xsl]              # (bz,by,bx)
+                        elif dset.ndim == 4:
+                            arr = dset[:, zsl, ysl, xsl]           # (C,bz,by,bx)
+                        else:
+                            raise ValueError(f"Unsupported ndim={dset.ndim} for key='{k}'")
+
+                        # important: keep backend consistent (numpy vs cupy)
+                        batch[k] = lib.asarray(arr, dtype=self.dtype)
+
+                    yield (zsl, ysl, xsl), batch
 
 
 class H5BlockWriter:
     """
-    Create output datasets and write blocks by Z-slice.
+    Create output datasets and write true 3D blocks.
+
+    Supports:
+      - (Z, Y, X)
+      - (C, Z, Y, X)   components-first
+
+    Usage:
+      writer.write_block("vol", zsl, ysl, xsl, vol_block)
+      writer.write_block("vec", zsl, ysl, xsl, vec_block)
     """
+
     def __init__(
         self,
         out_path: Path | str,
         specs: Dict[str, dict],   # per key: shape, dtype, chunks, compression, etc.
-        mode="w",
+        mode: str = "w",
     ):
         self.out_path = str(out_path)
         self.specs = specs
         self.mode = mode
-        self.F = None
-        self.ds = {}
+        self.F: Optional[h5.File] = None
+        self.ds: Dict[str, h5.Dataset] = {}
 
     def __enter__(self):
         self.F = h5.File(self.out_path, self.mode)
@@ -177,11 +222,22 @@ class H5BlockWriter:
         self.F = None
         self.ds = {}
 
-    def write_block(self, key: str, zsl: slice, data: np.ndarray):
+    @staticmethod
+    def _to_numpy(x):
+        """h5py needs NumPy; convert CuPy arrays if needed."""
+        # CuPy arrays have .get(); NumPy arrays don't.
+        get = getattr(x, "get", None)
+        return get() if callable(get) else x
+
+    def write_block(self, key: str, zsl: slice, ysl: slice, xsl: slice, data):
         dset = self.ds[key]
+        data_np = self._to_numpy(data)
+
         if dset.ndim == 3:
-            dset[zsl, :, :] = data
+            # data shape expected: (bz, by, bx)
+            dset[zsl, ysl, xsl] = data_np
         elif dset.ndim == 4:
-            dset[:, zsl, :, :] = data
+            # data shape expected: (C, bz, by, bx)
+            dset[:, zsl, ysl, xsl] = data_np
         else:
             raise ValueError(f"Unsupported ndim={dset.ndim} for key='{key}'")
