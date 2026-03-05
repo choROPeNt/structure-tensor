@@ -258,8 +258,12 @@ def eig_special_3d(
         # vec is [x1 y1 z1] = v1
         l = lib.sum(lib.square(vec, out=tmp[:3]), axis=0, out=vec_tmp)
 
-    cpx.rsqrt(l, out=l)
-    vec *= l
+    eps = lib.float32(1e-12)
+
+    lib.maximum(l, eps, out=l)   # avoid division by zero
+    cpx.rsqrt(l, out=l)          # l = 1 / sqrt(l)
+    vec *= l                     # normalize
+    lib.clip(vec, -1.0, 1.0, out=vec)  # numerical safety
 
     val = val.reshape(val.shape[:-1] + input_shape[1:])
     vec = vec.reshape(vec.shape[:-1] + input_shape[1:])
