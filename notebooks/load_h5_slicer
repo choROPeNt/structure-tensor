@@ -1,0 +1,59 @@
+import slicer # type: ignore
+import numpy as np
+import h5py
+
+
+# -------------------------
+# user settings
+# -------------------------
+h5_file = "/Users/christian/Projects/structure-tensor/data/original/285_01_HR_.vol.h5"
+dataset_name = "volume"
+sel = (
+    slice(0, 1000),   # axis 0
+    slice(None),   # axis 1
+    slice(None),   # axis 2
+)
+
+node_name = "H5_preview"
+
+# set this to True if your HDF5 dataset is [x, y, z]
+transpose_from_xyz = False
+
+
+# -------------------------
+# load HDF5 preview
+# -------------------------
+with h5py.File(h5_file, "r") as f:
+    dset = f[dataset_name]
+
+    if transpose_from_xyz:
+        arr = dset[sel]          # [x, y, z]
+        arr = np.transpose(arr, (2, 1, 0))   # -> [z, y, x]
+    else:
+        arr = dset[sel]          # already [z, y, x]
+
+arr = np.asarray(arr)
+
+# ensure a Slicer-friendly dtype
+if arr.dtype == np.uint16:
+    arr_out = arr
+else:
+    arr_out = arr.astype(np.uint16)
+
+# create volume node
+node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", node_name)
+slicer.util.updateVolumeFromArray(node, arr_out)
+node.CreateDefaultDisplayNodes()
+
+# optional spacing
+node.SetSpacing(1.0, 1.0, 1.0)
+
+# show in viewers
+slicer.util.setSliceViewerLayers(background=node)
+slicer.util.resetSliceViews()
+
+print("Loaded preview volume:")
+print("  file:", h5_file)
+print("  dataset:", dataset_name)
+print("  array shape in Slicer [z,y,x]:", arr_out.shape)
+print("  dtype:", arr_out.dtype)

@@ -38,7 +38,7 @@ def structure_tensor_3d(
     """
 
     # Make sure it's an array.
-    volume = lib.asarray(volume).astype(lib.float32, copy=False)
+    volume = lib.asarray(volume).astype(lib.float64, copy=False)
 
     # Check data type. Must be floating point.
     if not lib.issubdtype(volume.dtype, lib.floating):
@@ -201,12 +201,12 @@ def eig_special_3d(
 
     Authors: vand@dtu.dk, 2019; niejep@dtu.dk, 2019-2024
     """
-    S = lib.asarray(S).astype(lib.float32, copy=False)
+    S = lib.asarray(S).astype(lib.float64, copy=False)
 
     # Check data type. Must be floating point.
     if not lib.issubdtype(S.dtype, lib.floating):
         raise ValueError("S must be floating point type.")
-
+    print(S.dtype)
     # Flatten S.
     input_shape = S.shape
     S = S.reshape(6, -1)
@@ -367,7 +367,7 @@ def eig_special_3d(
         l = lib.einsum("ij,ij->j", vec, vec, out=vec_tmp)
 
     lib.sqrt(l, out = l)
-    lib.maximum(l, 1e-24, out = l)
+    # lib.maximum(l, 1e-24, out = l)
     vec /= l
 
 
