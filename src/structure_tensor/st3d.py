@@ -116,7 +116,7 @@ def eigh_baseline_3d(
     eigenvalue_order: str = "desc",
     which_vec: str = "min",  # "min" smallest eigenvalue eigenvector, "max" largest
     dtype=None,              # e.g. lib.float32
-) -> tuple[Array, Array]:
+    ) -> tuple[Array, Array]:
     """
     Batched symmetric eigensolve for matrix field A with shape (..., 3, 3).
 
@@ -181,7 +181,7 @@ def eig_special_3d(
     S: Array,
     full: bool = False,
     eigenvalue_order: Literal["desc", "asc"] = "desc",
-) -> tuple[Array, Array]:
+    ) -> tuple[Array, Array]:
     """Eigensolution for symmetric real 3-by-3 matrices.
 
     Args:
@@ -366,8 +366,15 @@ def eig_special_3d(
         # vec is [x1 y1 z1] = v1
         l = lib.einsum("ij,ij->j", vec, vec, out=vec_tmp)
 
-    lib.sqrt(l, out = l)
-    # lib.maximum(l, 1e-24, out = l)
+
+    lib.sqrt(l, out=l)
+
+    eps = lib.nextafter(
+        lib.array(0, dtype=l.dtype),
+        lib.array(1, dtype=l.dtype)
+    )
+
+    lib.maximum(l, eps, out=l)
     vec /= l
 
 
