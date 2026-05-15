@@ -1,0 +1,36 @@
+vol_data:
+  key: "volume"
+  path: "data/BIIAX_196(245)_02/BIIAX_196(245)_02_2026-04-17_103446/tomo-A/BIIAX_196(245)_02_tomo-A_recon_test512.h5"
+
+analysis_data:
+  keys: ["vec", "eig"]
+  path: "data/BIIAX_196(245)_02/BIIAX_196(245)_02_2026-04-17_103446/tomo-A/BIIAX_196(245)_02_tomo-A_recon_test512-2.5.val.vec.h5"
+
+block_size: [256, 256, 256]
+
+clustering:
+  n_clusters: 3
+  n_sample: 200000       # voxels to subsample for fitting
+  pca_variance: 0.95     # fraction of variance retained by PCA
+  sigma: 1.6             # gaussian smooth sigma (match structure_tensor sigma)
+  truncate: 4.0          # gaussian truncation
+  seed: 0
+
+morpho:
+  batch_size: 32
+  gauss_sigma: 2.0
+  morph_iters:           # per-cluster iterations; 0 = skip cleanup
+    0: 4
+    1: 4
+    2: 4
+
+xdmf:
+  spacing_xyz: [1.0, 1.0, 1.0]   # physical voxel size (x, y, z)
+  origin_xyz:  [0.0, 0.0, 0.0]   # physical origin
+
+output:
+  path: "results/BIIAX_196(245)_02_tomo-A_recon_test512-2.5.seg.h5"
+  datasets:
+    seg:                 # label map  (Z, Y, X)
+      dtype: uint8
+      components: 1
