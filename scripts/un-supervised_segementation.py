@@ -1,4 +1,6 @@
 from pathlib import Path
+from queue import Queue
+from threading import Thread
 
 import h5py
 import numpy as np
@@ -20,7 +22,7 @@ from structure_tensor.post_processing import align_direction
 from structure_tensor.xdmf_io import write_xdmf_for_h5
 
 
-def _vol_shape(path: str, key: str):
+def _vol_shape(path: str, key: str) -> tuple:
     """Return (Z, Y, X) of a 3-D or component-first 4-D dataset."""
     with h5py.File(path, "r") as f:
         obj = f[key]
@@ -33,10 +35,41 @@ def _vol_shape(path: str, key: str):
         raise ValueError(f"Unexpected ndim={obj.ndim} for '{key}'")
 
 
+def _parse_crop(config: dict, full_shape: tuple) -> tuple:
+    """
+    Return (z_sl, y_sl, x_sl) from config['crop'], clamped to full_shape.
+
+    Config example:
+        crop:
+          z: [0, 64]      # first 64 slices
+          y: [128, 384]   # optional; omit to use full extent
+          x: [128, 384]
+    """
+    crop = config.get("crop", {})
+    slices = []
+    for dim, n in zip(("z", "y", "x"), full_shape):
+        rng = crop.get(dim)
+        if rng is None:
+            slices.append(slice(0, n))
+        else:
+            lo = max(0, int(rng[0]))
+            hi = min(n, int(rng[1]))
+            slices.append(slice(lo, hi))
+    return tuple(slices)
+
+
+def _cropped_shape(config: dict, full_shape: tuple) -> tuple:
+    """Return the (Z, Y, X) shape after applying crop from config."""
+    slices = _parse_crop(config, full_shape)
+    return tuple(s.stop - s.start for s in slices)
+
+
 def iter_blocks(config: dict):
     """
-    Yield (slices, batch) for every spatial block, reading vol and analysis
-    data from their respective H5 files in lock-step.
+    Yield (crop-relative slices, batch) for every block inside the crop region.
+
+    Reads directly from h5py so only the crop region is touched on disk —
+    no wasted reads for blocks that fall outside the crop.
 
     batch keys: vol_key + all analysis_data keys
     """
@@ -46,12 +79,83 @@ def iter_blocks(config: dict):
     ana_keys   = tuple(config["analysis_data"]["keys"])
     block_size = tuple(config.get("block_size", [64, 256, 256]))
 
-    with (
-        H5BlockReader(vol_path, keys=(vol_key,), block_size=block_size) as vol_r,
-        H5BlockReader(ana_path, keys=ana_keys,   block_size=block_size) as ana_r,
-    ):
-        for (slices, vol_batch), (_, ana_batch) in zip(vol_r, ana_r):
-            yield slices, {**vol_batch, **ana_batch}
+    full_shape        = _vol_shape(vol_path, vol_key)
+    z_sl, y_sl, x_sl = _parse_crop(config, full_shape)
+
+    def _block_ranges(crop_sl: slice, bsize: int):
+        """Block-aligned absolute slices that cover crop_sl exactly."""
+        b0 = (crop_sl.start // bsize) * bsize
+        for lo in range(b0, crop_sl.stop, bsize):
+            hi  = min(lo + bsize, crop_sl.stop)
+            lo  = max(lo, crop_sl.start)
+            if lo < hi:
+                yield slice(lo, hi)
+
+    with h5py.File(vol_path, "r") as vf, h5py.File(ana_path, "r") as af:
+        vol_ds = vf[vol_key]
+        if not isinstance(vol_ds, h5py.Dataset):
+            raise TypeError(f"'{vol_key}' is not a Dataset in {vol_path}")
+        ana_dss: dict[str, h5py.Dataset] = {}
+        for k in ana_keys:
+            ds = af[k]
+            if not isinstance(ds, h5py.Dataset):
+                raise TypeError(f"'{k}' is not a Dataset in {ana_path}")
+            ana_dss[k] = ds
+
+        for bz in _block_ranges(z_sl, block_size[0]):
+            for by in _block_ranges(y_sl, block_size[1]):
+                for bx in _block_ranges(x_sl, block_size[2]):
+                    batch = {vol_key: np.asarray(vol_ds[bz, by, bx])}
+                    for k, ds in ana_dss.items():
+                        batch[k] = (np.asarray(ds[bz, by, bx])
+                                    if ds.ndim == 3
+                                    else np.asarray(ds[:, bz, by, bx]))
+
+                    # crop-relative output coordinates
+                    rel = (
+                        slice(bz.start - z_sl.start, bz.stop - z_sl.start),
+                        slice(by.start - y_sl.start, by.stop - y_sl.start),
+                        slice(bx.start - x_sl.start, bx.stop - x_sl.start),
+                    )
+                    yield rel, batch
+
+
+def _prefetch_blocks(config: dict):
+    """
+    Wrap iter_blocks with a background thread that fills a bounded queue,
+    overlapping H5 I/O with compute on the main thread.
+
+    Config key (optional):
+        loader:
+          queue_size: 4   # number of blocks buffered ahead
+    """
+    queue_size = int(config.get("loader", {}).get("queue_size", 4))
+
+    _DONE = object()
+    q: Queue = Queue(maxsize=queue_size)
+
+    def _fill():
+        try:
+            for item in iter_blocks(config):
+                q.put(("ok", item))
+        except Exception as exc:
+            q.put(("err", exc))
+        finally:
+            q.put(_DONE)
+
+    t = Thread(target=_fill, daemon=True)
+    t.start()
+
+    while True:
+        item = q.get()
+        if item is _DONE:
+            break
+        tag, payload = item
+        if tag == "err":
+            raise payload
+        yield payload
+
+    t.join()
 
 
 def build_output_specs(config: dict, vol_shape: tuple) -> dict:
@@ -76,12 +180,14 @@ def build_output_specs(config: dict, vol_shape: tuple) -> dict:
         dtype      = np.dtype(ds_cfg.get("dtype", "float32"))
         components = int(ds_cfg.get("components", 1))
 
+        spatial_chunks = tuple(min(b, s) for b, s in zip(block_size, vol_shape))
+
         if components == 1:
             shape  = vol_shape
-            chunks = block_size
+            chunks = spatial_chunks
         else:
             shape  = (components,) + vol_shape
-            chunks = (components,) + block_size
+            chunks = (components,) + spatial_chunks
 
         specs[key] = dict(
             shape=shape,
@@ -118,7 +224,7 @@ def extract_features(eig_s: np.ndarray, vec_s: np.ndarray, raw_s: np.ndarray) ->
         (vx * vx).astype(np.float32),
         (vy * vy).astype(np.float32),
         (vz * vz).astype(np.float32),
-        raw_s.ravel().astype(np.float32),
+        # raw_s.ravel().astype(np.float32),
     ])
 
 
@@ -136,37 +242,44 @@ def fit_pipeline(config: dict, vol_shape: tuple):
     -------
     scaler, pca, km
     """
-    vol_key    = config["vol_data"]["key"]
-    sigma      = float(config.get("clustering", {}).get("sigma", 1.6))
-    truncate   = float(config.get("clustering", {}).get("truncate", 4.0))
-    n_sample   = int(config.get("clustering", {}).get("n_sample", 200_000))
-    n_clusters = int(config.get("clustering", {}).get("n_clusters", 3))
-    pca_var    = float(config.get("clustering", {}).get("pca_variance", 0.95))
-    rng        = np.random.default_rng(config.get("clustering", {}).get("seed", 0))
+    clust_cfg    = config.get("clustering", {})
+    vol_key      = config["vol_data"]["key"]
+    sigma        = float(clust_cfg.get("sigma", 1.6))
+    truncate     = float(clust_cfg.get("truncate", 4.0))
+    n_sample     = int(clust_cfg.get("n_sample", 200_000))
+    n_clusters   = int(clust_cfg.get("n_clusters", 3))
+    pca_var      = float(clust_cfg.get("pca_variance", 0.95))
+    mask_thresh  = float(clust_cfg.get("mask_threshold", 0.0))
+    rng          = np.random.default_rng(clust_cfg.get("seed", 0))
 
     total_voxels = int(np.prod(vol_shape))
     samples = []
     collected = 0
 
-    print(f"Pass 1 — fitting pipeline (n_sample={n_sample}, n_clusters={n_clusters})")
+    print(f"Pass 1 — fitting pipeline (n_sample={n_sample}, n_clusters={n_clusters}, mask_threshold={mask_thresh})")
 
-    for (zsl, ysl, xsl), batch in iter_blocks(config):
+    for (zsl, ysl, xsl), batch in _prefetch_blocks(config):
         vol = batch[vol_key]
         eig = batch["eig"]
         vec = batch["vec"]
 
-        vol_smooth = gaussian_filter(vol.astype(np.float32), sigma=sigma, truncate=truncate)
+        vol_np     = vol.get() if hasattr(vol, "get") else np.asarray(vol)
+        vol_smooth = gaussian_filter(vol_np.astype(np.float32), sigma=sigma, truncate=truncate)
 
-        X_block = extract_features(eig, vec, vol_smooth)  # (N_block, 6)
-        n_block = X_block.shape[0]
+        X_block   = extract_features(eig, vec, vol_smooth)           # (N_block, 6)
+        mask_flat = (vol_np > mask_thresh).ravel()                   # foreground mask
+        X_valid   = X_block[mask_flat]
+        n_valid   = X_valid.shape[0]
+        if n_valid == 0:
+            continue
 
-        # proportional allocation: how many voxels to keep from this block
-        n_want = max(1, round(n_sample * n_block / total_voxels))
-        n_pick = min(n_want, n_block)
-        idx = rng.choice(n_block, size=n_pick, replace=False)
-        samples.append(X_block[idx])
+        # proportional allocation based on foreground voxel count
+        n_want = max(1, round(n_sample * n_valid / total_voxels))
+        n_pick = min(n_want, n_valid)
+        idx = rng.choice(n_valid, size=n_pick, replace=False)
+        samples.append(X_valid[idx])
         collected += n_pick
-        print(f"  block z={zsl} y={ysl} x={xsl}  sampled {n_pick}/{n_block}", end="\r")
+        print(f"  block z={zsl} y={ysl} x={xsl}  sampled {n_pick}/{n_valid} fg voxels", end="\r")
 
     print(f"\nTotal sampled voxels: {collected}")
 
@@ -201,9 +314,10 @@ def cleanup_segmentation(config: dict, out_path: str, vol_shape: tuple, n_cluste
     batch_size  = int(morpho_cfg.get("batch_size", 32))
     gauss_sigma = float(morpho_cfg.get("gauss_sigma", 2.0))
 
-    # per-cluster morph iterations (yaml may give int keys already)
+    # per-cluster morph iterations — config keys are 0-indexed cluster IDs,
+    # but stored labels are 1-indexed (0 = background), so shift keys by 1
     raw_iters   = morpho_cfg.get("morph_iters", {i: 4 for i in range(n_clusters)})
-    morph_iters = {int(k): int(v) for k, v in raw_iters.items()}
+    morph_iters = {int(k) + 1: int(v) for k, v in raw_iters.items()}
 
     struct  = generate_binary_structure(3, 1)
     morph_o = (max(morph_iters.values()) + 1) if morph_iters else 0
@@ -224,10 +338,11 @@ def cleanup_segmentation(config: dict, out_path: str, vol_shape: tuple, n_cluste
             z1h = min(D,  z1 + overlap)
 
             batch_s = np.asarray(seg_ds[z0h:z1h], dtype=np.int16)
+            bg_mask = batch_s == 0          # protect background throughout
             clean_b = batch_s.copy()
 
-            # step 1: binary opening per cluster → mark removed voxels as -1
-            for k in range(n_clusters):
+            # step 1: binary opening per tissue cluster → mark removed voxels as -1
+            for k in range(1, n_clusters + 1):
                 iters = morph_iters.get(k, 0)
                 if iters == 0:
                     continue
@@ -235,7 +350,8 @@ def cleanup_segmentation(config: dict, out_path: str, vol_shape: tuple, n_cluste
                 opened = np.asarray(binary_opening(mask, structure=struct, iterations=iters), dtype=bool)
                 clean_b[mask & ~opened] = -1
 
-            # fill gaps iteratively with grey_dilation
+            # fill gaps iteratively; background (0) is never marked -1 so it
+            # won't be overwritten, but dilation could bleed — restored below
             for _ in range(overlap + 4):
                 gap = clean_b == -1
                 if not gap.any():
@@ -243,13 +359,16 @@ def cleanup_segmentation(config: dict, out_path: str, vol_shape: tuple, n_cluste
                 grown = grey_dilation(clean_b, size=3)
                 clean_b[gap] = grown[gap]
 
-            # step 2: Gaussian soft-voting for smooth boundaries
+            # step 2: Gaussian soft-voting over tissue clusters only
             if gauss_sigma > 0:
                 scores = np.stack([
                     gaussian_filter((clean_b == k).astype(np.float32), sigma=gauss_sigma)
-                    for k in range(n_clusters)
+                    for k in range(1, n_clusters + 1)
                 ], axis=0)                          # (n_clusters, bZ, Y, X)
-                clean_b = scores.argmax(axis=0).astype(np.int16)
+                clean_b = scores.argmax(axis=0).astype(np.int16) + 1  # back to 1-indexed
+
+            # restore background — dilation/gaussian may have bled into it
+            clean_b[bg_mask] = 0
 
             # crop halo and write back
             lo = z0 - z0h
@@ -390,11 +509,15 @@ def main(config: dict):
     truncate   = float(config.get("clustering", {}).get("truncate", 4.0))
     n_clusters = int(config.get("clustering", {}).get("n_clusters", 3))
 
-    vol_shape = _vol_shape(config["vol_data"]["path"], config["vol_data"]["key"])
-    out_path  = config["output"]["path"]
-    specs     = build_output_specs(config, vol_shape)
+    full_shape = _vol_shape(config["vol_data"]["path"], config["vol_data"]["key"])
+    vol_shape  = _cropped_shape(config, full_shape)
+    out_path   = config["output"]["path"]
+    specs      = build_output_specs(config, vol_shape)
 
-    print(f"Volume shape : {vol_shape}")
+    if vol_shape != full_shape:
+        print(f"Volume shape : {full_shape}  →  crop {vol_shape}")
+    else:
+        print(f"Volume shape : {vol_shape}")
     print(f"Output       : {out_path}")
     for k, sp in specs.items():
         print(f"  {k:20s}  shape={sp['shape']}  dtype={sp['dtype']}")
@@ -402,21 +525,28 @@ def main(config: dict):
     # ── Pass 1: fit ──────────────────────────────────────────────────────────
     scaler, pca, km = fit_pipeline(config, vol_shape)
 
+    mask_thresh = float(config.get("clustering", {}).get("mask_threshold", 0.0))
+
     # ── Pass 2: predict raw labels + write ───────────────────────────────────
     print("\nPass 2 — predicting and writing raw labels ...")
     with H5BlockWriter(out_path, specs=specs) as writer:
-        for (zsl, ysl, xsl), batch in iter_blocks(config):
+        for (zsl, ysl, xsl), batch in _prefetch_blocks(config):
             vol = batch[vol_key]
             eig = batch["eig"]
             vec = batch["vec"]
 
-            vol_smooth = gaussian_filter(vol.astype(np.float32), sigma=sigma, truncate=truncate)
+            vol_np     = vol.get() if hasattr(vol, "get") else np.asarray(vol)
+            vol_smooth = gaussian_filter(vol_np.astype(np.float32), sigma=sigma, truncate=truncate)
+            mask_flat  = (vol_np > mask_thresh).ravel()
 
-            X_block  = extract_features(eig, vec, vol_smooth)
-            X_scaled = scaler.transform(X_block)
-            X_pca    = pca.transform(X_scaled)
-            labels   = km.predict(X_pca).reshape(vol.shape).astype(np.uint8)
+            X_block = extract_features(eig, vec, vol_smooth)
+            labels  = np.zeros(vol_np.size, dtype=np.uint8)  # 0 = background
+            if mask_flat.any():
+                X_scaled        = scaler.transform(X_block[mask_flat])
+                X_pca           = pca.transform(X_scaled)
+                labels[mask_flat] = km.predict(X_pca).astype(np.uint8) + 1  # 1..n_clusters
 
+            labels = labels.reshape(vol_np.shape)
             print(f"  block z={zsl} y={ysl} x={xsl}  labels={np.unique(labels)}", end="\r")
             writer.write_block("seg", zsl, ysl, xsl, labels)
 

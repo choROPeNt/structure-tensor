@@ -4,9 +4,19 @@ vol_data:
 
 analysis_data:
   keys: ["vec", "eig"]
-  path: "results/BIIAX_196(245)_02_tomo-A_recon_2.5.val.vec.h5"
+  path: "data/BIIAX_196(245)_02_tomo-A_recon_2.5.val.vec.h5"
 
 block_size: [512, 512, 512]
+
+loader:
+  queue_size: 4     # blocks buffered ahead by the prefetch thread (increase if I/O is fast)
+
+# Optional crop for quick prototyping — comment out to process the full volume.
+# z selects Z-slices, y/x can be omitted to keep full extent.
+crop:
+  z: [0, 64]
+  # y: [512, 1536]
+  # x: [512, 1536]
 
 clustering:
   n_clusters: 3
@@ -15,6 +25,7 @@ clustering:
   sigma: 1.6             # gaussian smooth sigma (match structure_tensor sigma)
   truncate: 4.0          # gaussian truncation
   seed: 0
+  mask_threshold: 0      # voxels <= this are background (outside cylinder); excluded from clustering
 
 morpho:
   batch_size: 32

@@ -82,6 +82,8 @@ def build_output_specs(
 
     with h5.File(in_path, "r") as F:
         obj = F[in_key]
+        if not isinstance(obj, h5.Dataset):
+            raise TypeError(f"'{in_key}' is not a Dataset in {in_path}")
         vol_shape = obj.shape
         vol_dtype = obj.dtype
 
@@ -203,9 +205,11 @@ def main(config_path: Path) -> None:
     sigma = round(float(lib.sqrt(r**2 / 2)), 2)
     rho = 2.5 * sigma
 
-    axes = tuple(cfg.get("axes", ["x", "z"]))
+    axes           = tuple(cfg.get("axes", ["x", "z"]))
+    mask_threshold = float(cfg.get("mask_threshold", 0.0))
 
     logger.info("Params: voxel_size=%g mm/px | fiber_diameter=%g mm", voxel_size, fiber_diameter)
+    logger.info("Mask threshold: %g (voxels <= this treated as background)", mask_threshold)
     logger.info("Gaussian: r=%g px | sigma=%g | rho=%g | axes=%s", r, sigma, rho, axes)
 
     # --- Processing loop ------------------------------------------------------
@@ -230,12 +234,17 @@ def main(config_path: Path) -> None:
                 vol.nbytes / 1024**2
             )
 
+            mask     = vol > mask_threshold              # foreground: inside cylinder
+            vol      = vol * mask                        # zero background before normalize
             vol_norm = normalize(vol, method="robust")
 
             S = structure_tensor_3d(vol_norm, sigma, rho)
-            # S = S6_to_mat33_for_eigh(S)
-            # print(S.shape,S.dtype)
             val, vec = eig_special_3d(S, full=False)  # expect vec: (3, bz, by, bx)
+
+            # zero background in output (ST Gaussian may bleed across the boundary)
+            mask_bc  = mask[lib.newaxis]                 # (1, Z, Y, X)
+            vec     *= mask_bc
+            val     *= mask_bc
 
             # Debug only if suspicious
             maxabs_pre = float(lib.max(lib.abs(vec)))
