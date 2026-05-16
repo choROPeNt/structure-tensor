@@ -80,7 +80,7 @@ def write_xdmf_for_h5(
             if not isinstance(ds, h5.Dataset):
                 raise TypeError(f"'{key}' is not an h5.Dataset")
 
-            if ds.ndim == 3 and ds.shape == (X, Y, X):
+            if ds.ndim == 3 and ds.shape == (Z, Y, X):
                 atype = atype or "Scalar"
                 dims = f"{Z} {Y} {X}"              # X Y Z
 
