@@ -1,12 +1,12 @@
 vol_data:
   key: "volume"
-  path: "data/BIIAX_196(245)_02/BIIAX_196(245)_02_2026-04-17_103446/tomo-A/BIIAX_196(245)_02_tomo-A_recon_test512.h5"
+  path: "data/BIIAX_196(245)_02/BIIAX_196(245)_02_2026-04-17_103446/tomo-A/BIIAX_196(245)_02_tomo-A_recon.h5"
 
 analysis_data:
   keys: ["vec", "eig"]
-  path: "data/BIIAX_196(245)_02/BIIAX_196(245)_02_2026-04-17_103446/tomo-A/BIIAX_196(245)_02_tomo-A_recon_test512-2.5.val.vec.h5"
+  path: "results/BIIAX_196(245)_02_tomo-A_recon_2.5.val.vec.h5"
 
-block_size: [256, 256, 256]
+block_size: [512, 512, 512]
 
 clustering:
   n_clusters: 3
