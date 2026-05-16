@@ -85,6 +85,13 @@ def build_output_specs(
         vol_shape = obj.shape
         vol_dtype = obj.dtype
 
+    # --- TEST: extract center 512^3 ---
+    test_size = 512
+    center = tuple(s // 2 for s in vol_shape)
+    half = test_size // 2
+    slices = tuple(slice(max(0, c - half), max(0, c - half) + test_size) for c in center)
+    vol_shape = tuple(s.stop - s.start for s in slices)
+
     out_vec_shape = (3,) + vol_shape
 
     specs = {
