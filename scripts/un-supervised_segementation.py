@@ -107,8 +107,11 @@ def extract_features(eig_s: np.ndarray, vec_s: np.ndarray, raw_s: np.ndarray) ->
     -------
     X : (N, 6)  float32  [fa, cs, vx², vy², vz², raw]
     """
-    fa = anisotropy(eig_s, kind="fa").ravel().astype(np.float32)
-    cs = anisotropy(eig_s, kind="spherical").ravel().astype(np.float32)
+    def _to_np(arr):
+            return arr.get() if hasattr(arr, "get") else np.asarray(arr)
+
+    fa = _to_np(anisotropy(eig_s, kind="fa").ravel()).astype(np.float32)
+    cs = _to_np(anisotropy(eig_s, kind="spherical").ravel()).astype(np.float32)
     vx, vy, vz = vec_s[0].ravel(), vec_s[1].ravel(), vec_s[2].ravel()
     return np.column_stack([
         fa, cs,
