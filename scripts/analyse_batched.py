@@ -85,6 +85,9 @@ def build_output_specs(
         vol_shape = obj.shape
         vol_dtype = obj.dtype
 
+
+
+
     out_vec_shape = (3,) + vol_shape
 
     specs = {
@@ -102,6 +105,13 @@ def build_output_specs(
         #     compression="gzip",
         #     compression_opts=4,
         # ),
+        "eig": dict(
+            shape=(3,) + vol_shape,   # (λ1, λ2, λ3) per voxel
+            dtype=lib.float32,
+            chunks=(3, cz, cy, cx),
+            compression="gzip",
+            compression_opts=4,
+        ),
     }
     return specs
 
@@ -185,17 +195,17 @@ def main(config_path: Path) -> None:
     # logger.info("Planned chunks vec: %s | vol: %s", specs["vec"]["chunks"], specs["vol"]["chunks"])
 
     # --- Parameters from YAML -------------------------------------------------
-    voxel_size = float(require(cfg, "voxel_size"))         # µm/px
-    fiber_diameter = float(require(cfg, "fiber_diameter")) # µm
+    voxel_size = float(require(cfg, "voxel_size"))         # mm/px
+    fiber_diameter = float(require(cfg, "fiber_diameter")) # mm
 
     # Gaussian params
     r = fiber_diameter / 2 / voxel_size
     sigma = round(float(lib.sqrt(r**2 / 2)), 2)
-    rho = 4 * sigma
+    rho = 2.5 * sigma
 
-    axes = tuple(cfg.get("axes", ["y", "z"]))
+    axes = tuple(cfg.get("axes", ["x", "z"]))
 
-    logger.info("Params: voxel_size=%g µm/px | fiber_diameter=%g µm", voxel_size, fiber_diameter)
+    logger.info("Params: voxel_size=%g mm/px | fiber_diameter=%g mm", voxel_size, fiber_diameter)
     logger.info("Gaussian: r=%g px | sigma=%g | rho=%g | axes=%s", r, sigma, rho, axes)
 
     # --- Processing loop ------------------------------------------------------
@@ -236,7 +246,7 @@ def main(config_path: Path) -> None:
                                 zsl, ysl, xsl, finite_ok, maxabs_pre
                             )
 
-            vec = align_direction(vec, axes=axes)
+            # vec = align_direction(vec, axes=axes)
 
             # Safe renormalize + clamp
             l = lib.linalg.norm(vec, axis=0, keepdims=True)
@@ -247,12 +257,12 @@ def main(config_path: Path) -> None:
             if maxabs_post > 1.01:
                 print(f"[WARN] post-norm: z={zsl}, y={ysl}, x={xsl} maxabs={maxabs_post}")
 
-            # vec = edge_aware_smooth_vec(vec, iters=100, sigma_theta_deg=24)
+            # vec = edge_aware_smooth_vec(vec, iters=20, sigma_theta_deg=24)
 
 
             writer.write_block("vec", zsl,ysl,xsl, vec.astype(lib.float32, copy=False))
             # writer.write_block("vol", zsl,ysl,xsl, vol.astype(lib.uint16, copy=False))
-            # writer.write_block("eig", zsl,ysl,xsl, val.astype(lib.float32, copy=False))
+            writer.write_block("eig", zsl,ysl,xsl, val.astype(lib.float32, copy=False))
 
     logger.info("Finished")
 
@@ -260,7 +270,7 @@ def main(config_path: Path) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyse a Volume via Batches.")
     parser.add_argument(
-        "--config",
+        "-c","--config",
         type=Path,  
         required=True,
         help="Path to the YAML config file.",
