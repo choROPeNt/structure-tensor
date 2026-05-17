@@ -1,7 +1,12 @@
 import argparse
 import logging
+import queue
+import threading
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import yaml
 
 # HDF5 + numeric
@@ -18,10 +23,12 @@ try:
     import cupy as lib  # pyright: ignore[reportMissingImports]
     xp = "cupy"
     from structure_tensor.cp import structure_tensor_3d, eig_special_3d
+    from cupyx.scipy.ndimage import gaussian_filter as _gaussian_filter  # pyright: ignore[reportMissingImports]
 except ImportError:
     import numpy as lib
     xp = "numpy"
     from structure_tensor import structure_tensor_3d, eig_special_3d
+    from scipy.ndimage import gaussian_filter as _gaussian_filter
 
 
 
@@ -97,8 +104,8 @@ def build_output_specs(
             shape=out_vec_shape,
             dtype=lib.float32,                
             chunks=(3, cz, cy, cx),
-            compression="gzip",
-            compression_opts=4,
+            # compression="gzip",
+            # compression_opts=4,
         ),
         # "vol": dict(
         #     shape=vol_shape,
@@ -111,8 +118,8 @@ def build_output_specs(
             shape=(3,) + vol_shape,   # (λ1, λ2, λ3) per voxel
             dtype=lib.float32,
             chunks=(3, cz, cy, cx),
-            compression="gzip",
-            compression_opts=4,
+            # compression="gzip",
+            # compression_opts=4,
         ),
     }
     return specs
@@ -163,11 +170,90 @@ def edge_aware_smooth_vec(v, iters=2, sigma_theta_deg=24.0, eps=1e-12):
 
 
 
+def _to_np(arr):
+    """Move array to CPU numpy (no-op if already numpy)."""
+    return arr.get() if xp == "cupy" else arr
+
+
+def compute_global_percentiles(
+    in_path: Path,
+    key: str,
+    p_low: float = 1.0,
+    p_high: float = 99.0,
+    stride: int = 4,
+) -> tuple[float, float]:
+    """Sample the volume at `stride` to estimate a robust global intensity range.
+
+    Excludes zero-valued voxels so background zeros don't pull the low percentile down.
+    """
+    import numpy as np_cpu
+    with h5.File(in_path, "r") as F:
+        data = F[key][::stride, ::stride, ::stride]
+    data = np_cpu.asarray(data, dtype=np_cpu.float32).ravel()
+    data = data[data > 0]
+    lo = float(np_cpu.percentile(data, p_low))
+    hi = float(np_cpu.percentile(data, p_high))
+    return lo, hi
+
+
+def save_block_figure(vol_norm, vec, val, zsl, ysl, xsl, fig_dir: Path,
+                      vol_raw=None, bg=None) -> Path:
+    """Save start / center / end Z-slices to a PNG.
+
+    vol_raw and bg are optional; when provided they appear as extra rows above
+    vol_norm so the effect of background correction is immediately visible.
+    """
+    import numpy as np_cpu
+
+    def to_np(a):
+        return np_cpu.asarray(_to_np(a))
+
+    z_idx    = [0, vol_norm.shape[0] // 2, vol_norm.shape[0] - 1]
+    z_labels = ["start", "center", "end"]
+
+    rows = []
+    if vol_raw is not None:
+        rows.append(("vol_raw",  to_np(vol_raw), "gray"))
+    if bg is not None:
+        rows.append(("bg",       to_np(bg),      "gray"))
+    rows += [
+        ("vol_norm", to_np(vol_norm), "gray"),
+        ("vec_x",    to_np(vec[0]),   "RdBu"),
+        ("vec_y",    to_np(vec[1]),   "RdBu"),
+        ("vec_z",    to_np(vec[2]),   "RdBu"),
+        ("eig_0",    to_np(val[0]),   "plasma"),
+    ]
+
+    fig, axes = plt.subplots(len(rows), 3, figsize=(11, 4 * len(rows)), constrained_layout=True)
+    fig.suptitle(
+        f"Block  z={zsl.start}:{zsl.stop}  y={ysl.start}:{ysl.stop}  x={xsl.start}:{xsl.stop}",
+        fontsize=10,
+    )
+
+    for r, (row_label, data, cmap) in enumerate(rows):
+        vmin, vmax = float(data.min()), float(data.max())
+        for c, (zi, zlabel) in enumerate(zip(z_idx, z_labels)):
+            ax = axes[r, c]
+            im = ax.imshow(data[zi], cmap=cmap, vmin=vmin, vmax=vmax, origin="lower", interpolation="nearest")
+            if r == 0:
+                ax.set_title(f"{zlabel}  (z={zi})", fontsize=8)
+            if c == 0:
+                ax.set_ylabel(row_label, fontsize=8)
+            ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    fig_path = fig_dir / f"block_z{zsl.start:05d}_y{ysl.start:05d}_x{xsl.start:05d}.png"
+    fig.savefig(fig_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 # =============================================================================
 # Main
 # =============================================================================
 
-def main(config_path: Path) -> None:
+def main(config_path: Path, plot: bool = False) -> None:
     logger = setup_logging()
     cfg = load_yaml(config_path)
 
@@ -203,29 +289,60 @@ def main(config_path: Path) -> None:
     # Gaussian params
     r = fiber_diameter / 2 / voxel_size
     sigma = round(float(lib.sqrt(r**2 / 2)), 2)
-    rho = 2.5 * sigma
+    rho = round(4 * sigma, 2)
 
     axes           = tuple(cfg.get("axes", ["x", "z"]))
     mask_threshold = float(cfg.get("mask_threshold", 0.0))
+    bg_sigma       = float(cfg.get("bg_sigma", 0.0))   # 0 = disabled
 
     logger.info("Params: voxel_size=%g mm/px | fiber_diameter=%g mm", voxel_size, fiber_diameter)
     logger.info("Mask threshold: %g (voxels <= this treated as background)", mask_threshold)
+    logger.info("Background correction: bg_sigma=%g %s", bg_sigma, "(disabled)" if bg_sigma == 0 else "")
     logger.info("Gaussian: r=%g px | sigma=%g | rho=%g | axes=%s", r, sigma, rho, axes)
 
+    fig_dir = out_path.parent / f"{out_path.stem}_figs" if plot else None
+    if plot:
+        logger.info("Plot mode: figures -> %s", fig_dir)
+
+    # --- Global intensity normalization ---------------------------------------
+    norm_p_low  = float(cfg.get("norm_p_low",  1.0))
+    norm_p_high = float(cfg.get("norm_p_high", 99.0))
+    logger.info("Sampling global percentiles (p%.1f / p%.1f) ...", norm_p_low, norm_p_high)
+    global_lo, global_hi = compute_global_percentiles(
+        in_path, raw_internal_path, p_low=norm_p_low, p_high=norm_p_high
+    )
+    global_scale = max(global_hi - global_lo, 1e-8)
+    logger.info("Global intensity range: lo=%.4g  hi=%.4g", global_lo, global_hi)
+
     # --- Processing loop ------------------------------------------------------
-    # Assumes these exist in your project namespace:
-    #   normalize, structure_tensor_3d, S6_to_mat33, eigh_baseline_3d,
-    #   align_direction, edge_aware_smooth_vec
+    _SENTINEL = object()
+
+    def _fetch_blocks(reader, q: queue.Queue) -> None:
+        try:
+            for slices, batch in iter(reader):  # type: ignore
+                q.put((slices, batch))
+        finally:
+            q.put(_SENTINEL)
+
     with H5BlockReader(in_path, keys_in, block_size=block_size, dtype=lib.float32, strict=False) as reader, \
          H5BlockWriter(out_path, specs, mode="w") as writer:
 
-        for (zsl, ysl, xsl), batch in iter(reader): # type: ignore
+        prefetch_q: queue.Queue = queue.Queue(maxsize=2)
+        fetch_thread = threading.Thread(target=_fetch_blocks, args=(reader, prefetch_q), daemon=True)
+        fetch_thread.start()
+
+        while True:
+            item = prefetch_q.get()
+            if item is _SENTINEL:
+                break
+            (zsl, ysl, xsl), batch = item
 
             vol = batch.get(raw_internal_path)
             if vol is None:
                 vol = batch.get("volume")
             if vol is None:
                 continue
+            vol = lib.asarray(vol)
             logger.info(
                 "Analysing | block=%s,%s,%s | shape=%s | dtype=%s | size=%.2f MB",
                 zsl, ysl, xsl,
@@ -234,9 +351,20 @@ def main(config_path: Path) -> None:
                 vol.nbytes / 1024**2
             )
 
-            mask     = vol > mask_threshold              # foreground: inside cylinder
-            vol      = vol * mask                        # zero background before normalize
-            vol_norm = normalize(vol, method="robust")
+            mask    = vol > mask_threshold
+            vol     = vol * mask
+            vol_raw = vol  # keep for plotting before any correction
+
+            bg = None
+            if bg_sigma > 0:
+                # subtract slowly-varying background (beam hardening / cupping)
+                bg   = _gaussian_filter(vol.astype(lib.float64), sigma=bg_sigma)
+                vol  = (vol.astype(lib.float64) - bg).astype(lib.float32)
+                vol *= mask   # re-apply mask after subtraction
+                vol_norm = lib.clip(vol, 0.0, vol.max()) / lib.maximum(vol.max(), 1e-8)
+            else:
+                vol_norm = lib.clip(vol, global_lo, global_hi)
+                vol_norm = (vol_norm - global_lo) / global_scale
 
             S = structure_tensor_3d(vol_norm, sigma, rho)
             val, vec = eig_special_3d(S, full=False)  # expect vec: (3, bz, by, bx)
@@ -255,7 +383,7 @@ def main(config_path: Path) -> None:
                                 zsl, ysl, xsl, finite_ok, maxabs_pre
                             )
 
-            # vec = align_direction(vec, axes=axes)
+            vec = align_direction(vec, axes=axes)
 
             # Safe renormalize + clamp
             l = lib.linalg.norm(vec, axis=0, keepdims=True)
@@ -268,10 +396,18 @@ def main(config_path: Path) -> None:
 
             # vec = edge_aware_smooth_vec(vec, iters=20, sigma_theta_deg=24)
 
+            if plot:
+                fig_path = save_block_figure(
+                    vol_norm, vec, val, zsl, ysl, xsl, fig_dir,
+                    vol_raw=vol_raw, bg=bg,
+                )
+                logger.info("Saved figure: %s", fig_path)
 
             writer.write_block("vec", zsl,ysl,xsl, vec.astype(lib.float32, copy=False))
             # writer.write_block("vol", zsl,ysl,xsl, vol.astype(lib.uint16, copy=False))
             writer.write_block("eig", zsl,ysl,xsl, val.astype(lib.float32, copy=False))
+
+        fetch_thread.join()
 
     logger.info("Finished")
 
@@ -280,9 +416,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyse a Volume via Batches.")
     parser.add_argument(
         "-c","--config",
-        type=Path,  
+        type=Path,
         required=True,
         help="Path to the YAML config file.",
     )
+    parser.add_argument(
+        "-p", "--plot",
+        action="store_true",
+        help="Save per-block slice figures (start/center/end Z) alongside the output.",
+    )
     args = parser.parse_args()
-    main(args.config)
+    main(args.config, plot=args.plot)

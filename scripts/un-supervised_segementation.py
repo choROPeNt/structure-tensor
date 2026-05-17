@@ -224,7 +224,7 @@ def extract_features(eig_s: np.ndarray, vec_s: np.ndarray, raw_s: np.ndarray) ->
         (vx * vx).astype(np.float32),
         (vy * vy).astype(np.float32),
         (vz * vz).astype(np.float32),
-        # raw_s.ravel().astype(np.float32),
+        raw_s.ravel().astype(np.float32),
     ])
 
 
