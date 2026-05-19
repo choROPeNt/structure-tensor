@@ -289,7 +289,7 @@ def main(config_path: Path, plot: bool = False) -> None:
     # Gaussian params
     r = fiber_diameter / 2 / voxel_size
     sigma = round(float(lib.sqrt(r**2 / 2)), 2)
-    rho = round(4 * sigma, 2)
+    rho = round(3 * sigma, 2)
 
     axes           = tuple(cfg.get("axes", ["x", "z"]))
     mask_threshold = float(cfg.get("mask_threshold", 0.0))
