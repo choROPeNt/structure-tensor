@@ -1,7 +1,7 @@
-file_path: data/BIIAX_196(245)_02/BIIAX_196(245)_02_2026-04-17_103446/tomo-A/BIIAX_196(245)_02_tomo-A_recon_crop.h5
+file_path: data/BIIAX_095(160)_02/BIIAX_095(160)_02_2026-04-13_151353/tomo-A/BIIAX_095(160)_02_tomo-A_recon_aligned_crop_ztrim150.h5
 raw_internal_path: /volume
 block_size: [512,512,512]
-out_path: results/BIIAX_196(245)_02_tomo-A_recon_crop.val.vec.h5
+out_path: results/BIIAX_095(160)_02_tomo-A_recon_aligned_crop_ztrim150.val.vec.h5
 fiber_diameter: 7.e-3 
-voxel_size: 0.001531657099723816
-bg_sigma: 30
+voxel_size: 0.001529552698135376
+# bg_sigma: 0
