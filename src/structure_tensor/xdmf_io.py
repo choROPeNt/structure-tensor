@@ -57,14 +57,11 @@ def write_xdmf_for_h5(
         # Take last three dims as spatial
         Z, Y, X = grid.shape
 
-
-
-        # ---- topology dims (XDMF order) ----
-
+        # ---- topology dims: XDMF 3DCoRectMesh Dimensions must be Z Y X (C-order) ----
         if center == "Cell":
-            topoX, topoY, topoZ = X + 1, Y + 1, Z + 1
+            topo_dims = f"{Z + 1} {Y + 1} {X + 1}"
         else:  # Node
-            topoX, topoY, topoZ = X, Y, Z
+            topo_dims = f"{Z} {Y} {X}"
 
 
         attr_blocks = []
@@ -90,7 +87,7 @@ def write_xdmf_for_h5(
 
             elif ds.ndim == 4 and ds.shape[0] == 3 and ds.shape[1:] == (Z, Y, X):
                 atype = atype or "Vector"
-                dims = f"{X} {Y} {Z} 3"            # X Y Z 3
+                dims = f"{Z} {Y} {X} 3"            # Z Y X 3 — VDS is transposed to (Z,Y,X,3)
 
                 if not make_vec_vds_if_needed:
                     raise ValueError(f"{key} is (3,Z,Y,X) but VDS disabled.")
@@ -126,10 +123,10 @@ def write_xdmf_for_h5(
 <Xdmf Version="3.0">
   <Domain>
     <Grid Name="ImageData" GridType="Uniform">
-      <Topology TopologyType="3DCoRectMesh" Dimensions="{topoX} {topoY} {topoZ}"/>
+      <Topology TopologyType="3DCoRectMesh" Dimensions="{topo_dims}"/>
       <Geometry GeometryType="ORIGIN_DXDYDZ">
-        <DataItem Dimensions="3" Format="XML">{ox} {oy} {oz}</DataItem>
-        <DataItem Dimensions="3" Format="XML">{dx} {dy} {dz}</DataItem>
+        <DataItem Dimensions="3" Format="XML">{oz} {oy} {ox}</DataItem>
+        <DataItem Dimensions="3" Format="XML">{dz} {dy} {dx}</DataItem>
       </Geometry>
 {chr(10).join(attr_blocks)}
     </Grid>
